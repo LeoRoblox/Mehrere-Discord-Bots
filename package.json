@@ -1,0 +1,47 @@
+{
+  "name": "mehrere-discord-bots",
+  "version": "1.0.0",
+  "description": "Multi-Discord-Bot Runner für Render Free Web Services mit Turso libSQL und modularem Plugin-System",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "deploy-commands": "tsx src/scripts/deploy-commands.ts",
+    "test-connection": "tsx src/scripts/test-connection.ts"
+  },
+  "keywords": [
+    "discord",
+    "discordjs",
+    "multi-bot",
+    "turso",
+    "libsql",
+    "render"
+  ],
+  "author": "LeoRoblox",
+  "license": "MIT",
+  "dependencies": {
+    "@libsql/client": "0.18.0",
+    "discord.js": "14.27.0",
+    "dotenv": "16.4.7",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.21.0",
+    "@types/node": "22.13.10",
+    "eslint": "9.21.0",
+    "prettier": "3.5.3",
+    "tsx": "4.19.3",
+    "typescript": "5.8.2",
+    "typescript-eslint": "8.26.0",
+    "vitest": "3.0.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

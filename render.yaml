@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: mehrere-discord-bots
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_OWNER_ID
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: VERIFY_BOT_TOKEN
+        sync: false
+      - key: VERIFY_BOT_CLIENT_ID
+        sync: false
