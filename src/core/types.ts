@@ -79,6 +79,13 @@ export interface IBotModule {
   readonly name: string;
   /** Name der Umgebungsvariable, die das Bot-Token enthält */
   readonly tokenEnvVar: string;
+  /**
+   * Name der Umgebungsvariable, die die Discord Application-/Client-ID dieses Bots enthält.
+   * Wird für die manuelle Command-Registrierung (deploy-commands) sowie als Sicherheitsprüfung
+   * beim Login verwendet: Die ID des eingeloggten Accounts muss mit dieser ID übereinstimmen,
+   * damit Token und Bot-Modul niemals vertauscht werden können.
+   */
+  readonly clientIdEnvVar?: string;
   /** Exakt die für dieses Modul benötigten Gateway-Intents */
   readonly requiredIntents: GatewayIntentBits[];
   /** Datenbankmigrationen für diesen Bot (eigener Namespace) */

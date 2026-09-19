@@ -23,13 +23,20 @@ async function testConnection(): Promise<void> {
     const duration = Date.now() - start;
     logger.info(`✅ Datenbankverbindung erfolgreich in ${duration}ms!`, result.rows[0]);
 
-    // 3. Bot Token Check (Länge und Format)
-    logger.info('3. Überprüfe Format von VERIFY_BOT_TOKEN...');
-    const token = config.VERIFY_BOT_TOKEN;
-    if (token.includes('.') && token.length > 50) {
-      logger.info('✅ VERIFY_BOT_TOKEN Format entspricht einem gültigen Discord-Bot-Token.');
-    } else {
-      logger.warn('⚠️ VERIFY_BOT_TOKEN scheint ein ungewöhnliches Format zu haben.');
+    // 3. Bot Token Check (Länge und Format) – für BEIDE getrennten Bots
+    logger.info('3. Überprüfe Format der Bot-Tokens (Verify-Bot + System-Bot)...');
+    const tokens: Array<[string, string, string]> = [
+      ['VERIFY_BOT_TOKEN', config.VERIFY_BOT_TOKEN, config.VERIFY_BOT_CLIENT_ID],
+      ['SYSTEM_BOT_TOKEN', config.SYSTEM_BOT_TOKEN, config.SYSTEM_BOT_CLIENT_ID]
+    ];
+    for (const [name, token, clientId] of tokens) {
+      if (token.includes('.') && token.length > 50) {
+        logger.info(
+          `✅ ${name} Format entspricht einem gültigen Discord-Bot-Token (Client-ID: ${clientId}).`
+        );
+      } else {
+        logger.warn(`⚠️ ${name} scheint ein ungewöhnliches Format zu haben.`);
+      }
     }
 
     logger.info('=== Alle Diagnosetests erfolgreich abgeschlossen ===');

@@ -1,15 +1,27 @@
 import { REST, Routes } from 'discord.js';
 import dotenv from 'dotenv';
+import type { IBotModule } from '../core/types.js';
 import { verifyBotModule } from '../bots/verify-bot/index.js';
+import { systemBotModule } from '../bots/system-bot/index.js';
 import { logger } from '../core/logger.js';
 
 dotenv.config();
 
 /**
+ * Alle Bot-Module, deren Slash-Commands GETRENNT registriert werden.
+ * Jeder Bot verwendet ausschließlich sein eigenes Token und seine eigene Client-ID.
+ */
+const ALL_BOT_MODULES: IBotModule[] = [verifyBotModule, systemBotModule];
+
+/**
  * Ermittelt die Client-ID entweder aus der Umgebungsvariable oder
  * extrahiert sie direkt aus dem ersten Base64-Teil des Discord-Tokens.
  */
-function resolveClientId(token: string, explicitClientId?: string): string {
+export function resolveClientId(
+  token: string,
+  explicitClientId: string | undefined,
+  clientIdEnvVar: string
+): string {
   if (explicitClientId && /^\d{17,20}$/.test(explicitClientId)) {
     return explicitClientId;
   }
@@ -23,7 +35,7 @@ function resolveClientId(token: string, explicitClientId?: string): string {
     // Ignorieren und Fehler werfen
   }
   throw new Error(
-    'Client-ID konnte nicht ermittelt werden. Bitte setze VERIFY_BOT_CLIENT_ID in deiner .env Datei.'
+    `Client-ID konnte nicht ermittelt werden. Bitte setze ${clientIdEnvVar} in deiner .env Datei.`
   );
 }
 
@@ -57,48 +69,67 @@ async function fetchBotGuildIds(rest: REST): Promise<string[]> {
   return guildIds;
 }
 
-async function deploy(): Promise<void> {
-  const isDryRun = process.argv.includes('--dry-run');
+/** Wählt anhand von `--bot=<id>` optional nur ein einzelnes Bot-Modul aus. */
+export function selectBotModules(argv: readonly string[], modules: IBotModule[]): IBotModule[] {
+  const botArg = argv.find((arg) => arg.startsWith('--bot='));
+  if (!botArg) return modules;
 
-  logger.info(
-    `Starte Registrierung der Discord Slash-Commands${isDryRun ? ' (DRY-RUN MODUS)' : ''}...`
+  const wantedId = botArg.slice('--bot='.length);
+  const selected = modules.filter((m) => m.id === wantedId);
+  if (selected.length === 0) {
+    throw new Error(
+      `Unbekannte Bot-ID '${wantedId}'. Verfügbar: ${modules.map((m) => m.id).join(', ')}`
+    );
+  }
+  return selected;
+}
+
+/**
+ * Registriert die Slash-Commands EINES Bot-Moduls mit dessen eigenem Token/Client-ID.
+ *
+ * @returns true bei Erfolg, false bei Fehlern (der nächste Bot wird trotzdem verarbeitet)
+ */
+async function deployForModule(botModule: IBotModule, isDryRun: boolean): Promise<boolean> {
+  const log = logger.forContext(`Deploy:${botModule.id}`);
+  const commandsData = botModule.commands.map((cmd) => cmd.data.toJSON());
+  const commandList = commandsData.map((c) => `/${c.name}`).join(', ') || '(keine)';
+
+  log.info(
+    `=== Bot '${botModule.name}' (${botModule.id}) – ${commandsData.length} Befehl(e): ${commandList} ===`
   );
 
-  // Alle Commands des Verifizierungs-Bots sammeln
-  const commandsData = verifyBotModule.commands.map((cmd) => cmd.data.toJSON());
-
   if (isDryRun) {
-    logger.info(`Gefundene Befehle (${commandsData.length}):`);
     for (const cmd of commandsData) {
-      logger.info(` - /${cmd.name}: ${cmd.description}`);
+      log.info(` - /${cmd.name}: ${cmd.description}`);
     }
-    logger.info('Vollständiger JSON-Payload für Discord REST API:');
-    logger.info(JSON.stringify(commandsData, null, 2));
-    logger.info('✅ Dry-Run erfolgreich beendet. Keine Änderungen an Discord übermittelt.');
-    return;
+    log.info('Vollständiger JSON-Payload für Discord REST API:');
+    log.info(JSON.stringify(commandsData, null, 2));
+    log.info('✅ Dry-Run für diesen Bot beendet. Keine Änderungen an Discord übermittelt.');
+    return true;
   }
 
-  const token = process.env.VERIFY_BOT_TOKEN;
+  const token = process.env[botModule.tokenEnvVar];
   if (!token) {
-    logger.error('VERIFY_BOT_TOKEN ist nicht gesetzt! Abbruch.');
-    process.exit(1);
+    log.error(`${botModule.tokenEnvVar} ist nicht gesetzt! Bot '${botModule.name}' übersprungen.`);
+    return false;
   }
 
-  const clientId = resolveClientId(token, process.env.VERIFY_BOT_CLIENT_ID);
+  const clientIdEnvVar = botModule.clientIdEnvVar ?? `${botModule.tokenEnvVar}_CLIENT_ID`;
+  const clientId = resolveClientId(token, process.env[clientIdEnvVar], clientIdEnvVar);
   const devGuildId = process.env.DISCORD_DEV_GUILD_ID;
 
-  logger.info(`Verwende Client-ID: ${clientId}`);
+  log.info(`Verwende Token aus ${botModule.tokenEnvVar} und Client-ID ${clientId}.`);
 
   const rest = new REST({ version: '10' }).setToken(token);
 
   try {
     // 1) Global registrieren: gilt für alle aktuellen und zukünftigen Server
-    logger.info(`Registriere ${commandsData.length} Befehl(e) global für Discord...`);
+    log.info(`Registriere ${commandsData.length} Befehl(e) global für Discord...`);
     await rest.put(Routes.applicationCommands(clientId), {
       body: commandsData
     });
-    logger.info(
-      '✅ Globale Befehle erfolgreich registriert (Discord kann globale Änderungen bis zu einer Stunde cachen).'
+    log.info(
+      `✅ Globale Befehle für Bot '${botModule.name}' registriert: ${commandList} (Discord kann globale Änderungen bis zu einer Stunde cachen).`
     );
 
     // 2) Zusätzlich pro Server registrieren: Guild-Commands sind SOFORT aktiv,
@@ -109,7 +140,7 @@ async function deploy(): Promise<void> {
     }
 
     if (targetGuildIds.size > 0) {
-      logger.info(
+      log.info(
         `Registriere Befehle zusätzlich SOFORT auf ${targetGuildIds.size} Server(n) (Guild-Commands sind ohne Cache-Delay aktiv)...`
       );
     }
@@ -121,18 +152,41 @@ async function deploy(): Promise<void> {
           body: commandsData
         });
         successCount++;
-        logger.info(`✅ Guild-Befehle für Server ${guildId} sofort aktiv registriert.`);
+        log.info(`✅ Guild-Befehle für Server ${guildId} sofort aktiv registriert.`);
       } catch (guildError) {
         // Fehlerisolierung: Ein einzelner Server blockiert die übrigen nicht
-        logger.error(`Fehler beim Registrieren auf Server ${guildId}:`, guildError);
+        log.error(`Fehler beim Registrieren auf Server ${guildId}:`, guildError);
       }
     }
 
-    logger.info(
-      `🎉 Fertig! ${successCount}/${targetGuildIds.size} Server sofort versorgt, globale Registrierung abgeschlossen.`
+    log.info(
+      `🎉 Bot '${botModule.name}': ${successCount}/${targetGuildIds.size} Server sofort versorgt, globale Registrierung abgeschlossen.`
     );
+    return true;
   } catch (error) {
-    logger.error('Fehler beim Registrieren der Slash-Commands:', error);
+    log.error(`Fehler beim Registrieren der Slash-Commands für Bot '${botModule.name}':`, error);
+    return false;
+  }
+}
+
+async function deploy(): Promise<void> {
+  const isDryRun = process.argv.includes('--dry-run');
+  const modules = selectBotModules(process.argv, ALL_BOT_MODULES);
+
+  logger.info(
+    `Starte getrennte Registrierung der Slash-Commands für ${modules.length} Bot(s)${isDryRun ? ' (DRY-RUN MODUS)' : ''}: ${modules
+      .map((m) => m.id)
+      .join(', ')}`
+  );
+
+  let hadError = false;
+  for (const botModule of modules) {
+    const ok = await deployForModule(botModule, isDryRun);
+    if (!ok) hadError = true;
+  }
+
+  if (hadError) {
+    logger.error('Mindestens ein Bot konnte nicht registriert werden.');
     process.exit(1);
   }
 }

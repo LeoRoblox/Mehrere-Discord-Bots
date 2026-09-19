@@ -17,7 +17,13 @@ services:
         sync: false
       - key: TURSO_AUTH_TOKEN
         sync: false
+      # Bot 1: Verify-Bot (/verifysystem) – eigene Discord-Anwendung
       - key: VERIFY_BOT_TOKEN
         sync: false
       - key: VERIFY_BOT_CLIENT_ID
+        sync: false
+      # Bot 2: System-Bot (/adminpanel) – eigene, getrennte Discord-Anwendung
+      - key: SYSTEM_BOT_TOKEN
+        sync: false
+      - key: SYSTEM_BOT_CLIENT_ID
         sync: false
