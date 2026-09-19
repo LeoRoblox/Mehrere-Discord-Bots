@@ -1,10 +1,13 @@
 import type {
   ChatInputCommandInteraction,
   ButtonInteraction,
+  StringSelectMenuInteraction,
+  ModalSubmitInteraction,
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
-  SlashCommandSubcommandsOnlyBuilder
+  SlashCommandSubcommandsOnlyBuilder,
+  SlashCommandOptionsOnlyBuilder
 } from 'discord.js';
 import type { Client as LibsqlClient } from '@libsql/client';
 
@@ -30,6 +33,7 @@ export interface ISlashCommand {
   data:
     | SlashCommandBuilder
     | SlashCommandSubcommandsOnlyBuilder
+    | SlashCommandOptionsOnlyBuilder
     | Omit<SlashCommandBuilder, 'addSubcommand' | 'addSubcommandGroup'>;
   /** Ausführungslogik */
   execute(interaction: ChatInputCommandInteraction, context: BotContext): Promise<void>;
@@ -43,6 +47,16 @@ export interface IButtonHandler {
   customId: string | RegExp;
   /** Ausführungslogik */
   execute(interaction: ButtonInteraction, context: BotContext): Promise<void>;
+}
+
+export interface ISelectMenuHandler {
+  customId: string | RegExp;
+  execute(interaction: StringSelectMenuInteraction, context: BotContext): Promise<void>;
+}
+
+export interface IModalHandler {
+  customId: string | RegExp;
+  execute(interaction: ModalSubmitInteraction, context: BotContext): Promise<void>;
 }
 
 /**
@@ -73,6 +87,8 @@ export interface IBotModule {
   readonly commands: ISlashCommand[];
   /** Registrierte Button-Handler */
   readonly buttons?: IButtonHandler[];
+  readonly selectMenus?: ISelectMenuHandler[];
+  readonly modals?: IModalHandler[];
   /** Initialisierungs-Hook nach erfolgreichem Login */
   onInit?(context: BotContext): Promise<void>;
   /** Cleanup-Hook vor dem Herunterfahren */

@@ -5,7 +5,9 @@ import {
   type Guild,
   type Interaction,
   type ChatInputCommandInteraction,
-  type ButtonInteraction
+  type ButtonInteraction,
+  type StringSelectMenuInteraction,
+  type ModalSubmitInteraction
 } from 'discord.js';
 import type { Client as LibsqlClient } from '@libsql/client';
 import type {
@@ -13,6 +15,8 @@ import type {
   BotContext,
   ISlashCommand,
   IButtonHandler,
+  ISelectMenuHandler,
+  IModalHandler,
   BotLogger
 } from './types.js';
 import type { AppConfig } from './config.js';
@@ -159,6 +163,14 @@ export class BotRegistry {
           await this.handleSlashCommand(botModule, interaction, context);
         } else if (interaction.isButton()) {
           await this.handleButton(botModule, interaction, context);
+        } else if (interaction.isAnySelectMenu()) {
+          await this.handleSelectMenu(
+            botModule,
+            interaction as StringSelectMenuInteraction,
+            context
+          );
+        } else if (interaction.isModalSubmit()) {
+          await this.handleModal(botModule, interaction, context);
         }
       } catch (unhandledErr) {
         log.error('Unerwarteter Fehler bei der Interaktionsverarbeitung:', unhandledErr);
@@ -206,9 +218,7 @@ export class BotRegistry {
     // 1) Global für alle Server registrieren (persistent, auch für zukünftige Server)
     try {
       await readyClient.application.commands.set(commandsData);
-      log.info(
-        `✅ ${commandsData.length} globale(r) Slash-Command(s) registriert: ${commandList}`
-      );
+      log.info(`✅ ${commandsData.length} globale(r) Slash-Command(s) registriert: ${commandList}`);
     } catch (error) {
       log.error('Fehler beim globalen Registrieren der Slash-Commands:', error);
     }
@@ -255,10 +265,7 @@ export class BotRegistry {
           .join(', ')}`
       );
     } catch (error) {
-      log.error(
-        `Fehler beim Registrieren der Slash-Commands auf Server ${guildId}:`,
-        error
-      );
+      log.error(`Fehler beim Registrieren der Slash-Commands auf Server ${guildId}:`, error);
     }
   }
 
@@ -317,6 +324,32 @@ export class BotRegistry {
         await interaction.reply({ content: errorMessage, ephemeral: true }).catch(() => null);
       }
     }
+  }
+
+  private async handleSelectMenu(
+    botModule: IBotModule,
+    interaction: StringSelectMenuInteraction,
+    context: BotContext
+  ): Promise<void> {
+    const handler = botModule.selectMenus?.find((entry: ISelectMenuHandler) =>
+      typeof entry.customId === 'string'
+        ? entry.customId === interaction.customId
+        : entry.customId.test(interaction.customId)
+    );
+    if (handler) await handler.execute(interaction, context);
+  }
+
+  private async handleModal(
+    botModule: IBotModule,
+    interaction: ModalSubmitInteraction,
+    context: BotContext
+  ): Promise<void> {
+    const handler = botModule.modals?.find((entry: IModalHandler) =>
+      typeof entry.customId === 'string'
+        ? entry.customId === interaction.customId
+        : entry.customId.test(interaction.customId)
+    );
+    if (handler) await handler.execute(interaction, context);
   }
 
   /**
