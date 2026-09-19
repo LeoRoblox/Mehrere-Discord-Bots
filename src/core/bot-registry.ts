@@ -6,7 +6,13 @@ import {
   type ButtonInteraction
 } from 'discord.js';
 import type { Client as LibsqlClient } from '@libsql/client';
-import type { IBotModule, BotContext, ISlashCommand, IButtonHandler } from './types.js';
+import type {
+  IBotModule,
+  BotContext,
+  ISlashCommand,
+  IButtonHandler,
+  BotLogger
+} from './types.js';
 import type { AppConfig } from './config.js';
 import { runMigrations } from './migrations.js';
 import { logger } from './logger.js';
@@ -125,6 +131,10 @@ export class BotRegistry {
         `Erfolgreich als '${readyClient.user.tag}' (ID: ${readyClient.user.id}) angemeldet.`
       );
 
+      // Slash-Commands automatisch bei Discord registrieren (Auto-Deploy beim Start),
+      // damit die Befehle auch ohne manuelles Ausführen von 'npm run deploy-commands' vorhanden sind.
+      await this.deployCommands(botModule, readyClient, log);
+
       if (botModule.onInit) {
         try {
           await botModule.onInit(context);
@@ -156,6 +166,49 @@ export class BotRegistry {
       client,
       context
     });
+  }
+
+  /**
+   * Registriert die Slash-Commands eines Bot-Moduls automatisch bei Discord.
+   * Wird direkt nach dem Login ausgeführt, damit die Befehle immer aktuell und
+   * auch bei einem frischen Deployment (z. B. Render) vorhanden sind.
+   */
+  private async deployCommands(
+    botModule: IBotModule,
+    readyClient: Client<true>,
+    log: BotLogger
+  ): Promise<void> {
+    try {
+      const commandsData = botModule.commands.map((cmd) => cmd.data.toJSON());
+
+      if (commandsData.length === 0) {
+        log.warn('Keine Slash-Commands definiert – Registrierung wird übersprungen.');
+        return;
+      }
+
+      const devGuildId = this.config.DISCORD_DEV_GUILD_ID;
+
+      if (devGuildId) {
+        // Guild-Commands sind sofort verfügbar (ideal für Tests)
+        await readyClient.application.commands.set(commandsData, devGuildId);
+        log.info(
+          `✅ ${commandsData.length} Slash-Command(s) für Guild ${devGuildId} registriert (sofort aktiv): ${commandsData
+            .map((c) => `/${c.name}`)
+            .join(', ')}`
+        );
+        return;
+      }
+
+      // Globale Registrierung (kann bis zu einer Stunde dauern, bis Discord sie überall cached)
+      await readyClient.application.commands.set(commandsData);
+      log.info(
+        `✅ ${commandsData.length} globale(r) Slash-Command(s) registriert: ${commandsData
+          .map((c) => `/${c.name}`)
+          .join(', ')}`
+      );
+    } catch (error) {
+      log.error('Fehler beim automatischen Registrieren der Slash-Commands:', error);
+    }
   }
 
   private async handleSlashCommand(
