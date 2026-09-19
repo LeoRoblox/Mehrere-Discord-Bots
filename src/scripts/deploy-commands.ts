@@ -27,6 +27,36 @@ function resolveClientId(token: string, explicitClientId?: string): string {
   );
 }
 
+/**
+ * Lädt über die Discord REST API alle Server (Guilds), in denen sich der Bot
+ * aktuell befindet (paginiert, bis zu 200 pro Seite).
+ */
+async function fetchBotGuildIds(rest: REST): Promise<string[]> {
+  const guildIds: string[] = [];
+  let after: string | null = null;
+
+  // Schleife: solange eine volle Seite (200) zurückkommt, gibt es weitere Server
+  while (true) {
+    const query = new URLSearchParams({ limit: '200' });
+    if (after) {
+      query.set('after', after);
+    }
+
+    const guilds = (await rest.get(`${Routes.userGuilds()}?${query.toString()}`)) as Array<{
+      id: string;
+    }>;
+
+    for (const guild of guilds) {
+      guildIds.push(guild.id);
+    }
+
+    if (guilds.length < 200) break;
+    after = guilds[guilds.length - 1].id;
+  }
+
+  return guildIds;
+}
+
 async function deploy(): Promise<void> {
   const isDryRun = process.argv.includes('--dry-run');
 
@@ -55,30 +85,52 @@ async function deploy(): Promise<void> {
   }
 
   const clientId = resolveClientId(token, process.env.VERIFY_BOT_CLIENT_ID);
-  const guildId = process.env.DISCORD_DEV_GUILD_ID;
+  const devGuildId = process.env.DISCORD_DEV_GUILD_ID;
 
   logger.info(`Verwende Client-ID: ${clientId}`);
 
   const rest = new REST({ version: '10' }).setToken(token);
 
   try {
-    if (guildId) {
+    // 1) Global registrieren: gilt für alle aktuellen und zukünftigen Server
+    logger.info(`Registriere ${commandsData.length} Befehl(e) global für Discord...`);
+    await rest.put(Routes.applicationCommands(clientId), {
+      body: commandsData
+    });
+    logger.info(
+      '✅ Globale Befehle erfolgreich registriert (Discord kann globale Änderungen bis zu einer Stunde cachen).'
+    );
+
+    // 2) Zusätzlich pro Server registrieren: Guild-Commands sind SOFORT aktiv,
+    //    auch auf allen Servern, auf denen der Bot bereits ist.
+    const targetGuildIds = new Set<string>(await fetchBotGuildIds(rest));
+    if (devGuildId) {
+      targetGuildIds.add(devGuildId);
+    }
+
+    if (targetGuildIds.size > 0) {
       logger.info(
-        `Registriere ${commandsData.length} Befehl(e) spezifisch für Test-Server (Guild-ID: ${guildId})...`
-      );
-      await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
-        body: commandsData
-      });
-      logger.info('✅ Guild-Befehle erfolgreich registriert (sofort aktiv).');
-    } else {
-      logger.info(`Registriere ${commandsData.length} Befehl(e) global für Discord...`);
-      await rest.put(Routes.applicationCommands(clientId), {
-        body: commandsData
-      });
-      logger.info(
-        '✅ Globale Befehle erfolgreich registriert (kann bis zu eine Stunde dauern, bis Discord sie global gecacht hat).'
+        `Registriere Befehle zusätzlich SOFORT auf ${targetGuildIds.size} Server(n) (Guild-Commands sind ohne Cache-Delay aktiv)...`
       );
     }
+
+    let successCount = 0;
+    for (const guildId of targetGuildIds) {
+      try {
+        await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+          body: commandsData
+        });
+        successCount++;
+        logger.info(`✅ Guild-Befehle für Server ${guildId} sofort aktiv registriert.`);
+      } catch (guildError) {
+        // Fehlerisolierung: Ein einzelner Server blockiert die übrigen nicht
+        logger.error(`Fehler beim Registrieren auf Server ${guildId}:`, guildError);
+      }
+    }
+
+    logger.info(
+      `🎉 Fertig! ${successCount}/${targetGuildIds.size} Server sofort versorgt, globale Registrierung abgeschlossen.`
+    );
   } catch (error) {
     logger.error('Fehler beim Registrieren der Slash-Commands:', error);
     process.exit(1);

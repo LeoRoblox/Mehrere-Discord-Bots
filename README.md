@@ -126,14 +126,24 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
 
 ### Schritt 3: Slash-Commands registrieren
 
-Bevor der Befehl `/verifysystem` in Discord sichtbar ist, muss er über die Discord REST API registriert werden:
+**Gute Nachricht: Das erledigt der Bot jetzt automatisch bei jedem Start!** 🎉
+
+Bei jedem Bot-Start (also auch nach jedem Render-Deployment oder Kaltstart) werden alle Slash-Commands automatisch bei Discord registriert:
+
+1. **Global** – gilt für alle aktuellen und zukünftigen Server.
+2. **Zusätzlich pro Server** – für jeden Server, auf dem der Bot aktuell Mitglied ist. Guild-Commands sind bei Discord **sofort aktiv** (keine Cache-Wartezeit von bis zu 60 Minuten wie bei globalen Commands). Es entstehen keine Duplikate: Ein Guild-Command mit demselben Namen überschreibt den globalen Command lokal.
+3. **Beim Server-Beitritt** – tritt der Bot einem neuen Server bei, werden die Commands ebenfalls sofort registriert, ohne dass ein Neustart nötig ist.
+
+> **Hinweis:** `DISCORD_DEV_GUILD_ID` schließt andere Server nicht mehr aus – sie wird nur zusätzlich bedient (praktisch für Tests).
+
+Ein manuelles Registrieren ist damit nicht mehr nötig, aber weiterhin möglich (z. B. um Commands ohne Bot-Neustart zu aktualisieren):
 
 1. Erstelle lokal eine `.env`-Datei (Vorlage: `.env.example`):
    ```bash
    cp .env.example .env
    ```
 2. Trage dein `VERIFY_BOT_TOKEN`, `VERIFY_BOT_CLIENT_ID` und optional deine `DISCORD_DEV_GUILD_ID` ein.
-3. Führe den Registrierungsbefehl aus:
+3. Führe den Registrierungsbefehl aus (registriert jetzt ebenfalls global + auf allen Servern, auf denen der Bot ist):
 
    ```bash
    # Dry-Run (zeigt den Payload ohne Senden)
@@ -142,8 +152,6 @@ Bevor der Befehl `/verifysystem` in Discord sichtbar ist, muss er über die Disc
    # Echte Registrierung
    npm run deploy-commands
    ```
-
-   > **Tipp:** Wenn `DISCORD_DEV_GUILD_ID` gesetzt ist, ist der Command auf diesem Server **sofort** verfügbar. Globale Registrierungen ohne Guild-ID können bis zu 60 Minuten dauern, bis Discord sie weltweit gecacht hat.
 
 ---
 
