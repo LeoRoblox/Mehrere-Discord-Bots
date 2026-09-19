@@ -9,9 +9,11 @@ Ein hochgradig ressourcenschonender, modularer Multi-Discord-Bot-Runner für **N
 1. [Architektur & Besonderheiten](#-architektur--besonderheiten)
 2. [Aktive Bots im System](#-aktive-bots-im-system)
    - [Bot 1: Verifizierungs-Bot (Christlichernico)](#bot-1-verifizierungs-bot-christlichernico)
+   - [Bot 2: System-Bot (Adminpanel)](#bot-2-system-bot-adminpanel)
+   - [Umgebungsvariablen beider Bots](#umgebungsvariablen-beider-bots)
 3. [Wichtige Plattform-Einschränkungen (Render, Discord, Turso, UptimeRobot)](#-wichtige-plattform-einschränkungen)
 4. [Vollständige Schritt-für-Schritt-Einrichtung](#-vollständige-schritt-für-schritt-einrichtung)
-   - [Schritt 1: Discord Developer Portal einrichten](#schritt-1-discord-developer-portal-einrichten)
+   - [Schritt 1: Discord Developer Portal einrichten (zwei Anwendungen)](#schritt-1-discord-developer-portal-einrichten)
    - [Schritt 2: Turso-Datenbank erstellen & verbinden](#schritt-2-turso-datenbank-erstellen--verbinden)
    - [Schritt 3: Slash-Commands registrieren](#schritt-3-slash-commands-registrieren)
    - [Schritt 4: Render Free Web Service deployen](#schritt-4-render-free-web-service-deployen)
@@ -25,6 +27,7 @@ Ein hochgradig ressourcenschonender, modularer Multi-Discord-Bot-Runner für **N
 ## 🏛 Architektur & Besonderheiten
 
 - **Single-Process Multi-Hosting:** Mehrere autonome Discord-Bots laufen in einer einzigen Node.js-Laufzeit. Das spart RAM und CPU-Zyklen.
+- **Strikt getrennte Bots:** Aktuell laufen **zwei vollständig getrennte Discord-Bots** (Verify-Bot und System-Bot). Jeder Bot ist eine eigene Discord-Anwendung mit eigenem Token, eigener Client-ID, eigenem Discord-Login, eigener Command-Registrierung, eigenen Handlern und eigenen Datenbanktabellen. Der Verify-Bot registriert niemals `/adminpanel`, der System-Bot niemals `/verifysystem`.
 - **Aggressives Speichermanagement:** Ungenutzte Discord-Caches (Nachrichten, Emojis, Reaktionen, Presences, etc.) sind vollständig deaktiviert (`Options.cacheWithLimits`). Der gesamte Speicherverbrauch beträgt nur ca. **100 MB RAM**, wodurch der Render Free-Tier (512 MB Limit) mühelos eingehalten wird.
 - **Minimaler HTTP-Server:** Ein nativer `node:http`-Server (0 externe Webframework-Abhängigkeiten) bedient ausschließlich den Pfad `/health` mit `{"status":"ok"}`. Alle anderen Pfade liefern `404 Not Found`. Keine Dashboards, keine Frontends, keine Leaks interner Daten.
 - **Zentrale libSQL / Turso Schicht:** Gemeinsame Datenbankverbindung mit automatischem Migrations-System (`_system_migrations`) und Namespace-Isolation je Bot.
@@ -54,6 +57,66 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
   - Antwortet mit einer **ephemeren Nachricht** (nur für den Klickenden sichtbar, Container V2):
     > _"Du hast bestätigt dass du die Regeln gelesen hast. **Unwissenheit schützt nicht vor Strafe!**"_
   - Speichert das Verifizierungsdatum in Turso in der Tabelle `verify_members` sowie ein Audit-Event in `verify_audit_log`.
+- **Umgebungsvariablen:** `VERIFY_BOT_TOKEN`, `VERIFY_BOT_CLIENT_ID`
+- **Modul:** `src/bots/verify-bot/` (Migrations-Namespace `verify-bot`, Tabellen `verify_*`)
+
+### Bot 2: System-Bot (Adminpanel)
+
+Eigenständiger Moderations-Bot – eine **separate Discord-Anwendung**, vollständig getrennt vom Verify-Bot.
+
+- **Slash-Command:** `/adminpanel user:<Benutzer>`
+  - Pflichtoption `user` als **Discord-User-Auswahl** (Benutzer des jeweiligen Servers).
+  - Nur innerhalb von Servern verwendbar.
+  - **Berechtigung:** Ausschließlich für Mitglieder mit einer dieser Rollen (keine Ausnahme für Owner):
+    - `1548429120948670616`
+    - `1548458441566330970`
+    - `1548458919074988082`
+    - `1548459353504223274`
+    - `1548459569867526174`
+  - Die Berechtigung wird **serverseitig bei jeder Interaktion** geprüft: beim Command sowie bei jedem Button, Select-Menü und Modal.
+- **Antwort (Discord Components V2 Container):**
+  - Titel: `ADMIN PANEL <ausgewählter Benutzer>`
+  - Text: _„Willkommen im Admin Panel. Wähle bei dem Button aus wie du diese Person bestrafen willst oder von dieser Person wissen willst.“_
+  - Buttons: `🕒 Timeout` · `Kicken` · `Bannen` · `Warnen` · `Unwarn` · `User Infos`
+- **Aktionen (alle Rückmeldungen ephemer, nur für den ausführenden Moderator sichtbar):**
+  1. **Timeout** – Frage _„Wie lange möchtest du die Person Timeouten?“_ mit String-Select-Menü (Placeholder _„Wähle die länge aus..“_): `1 Minute`, `2,5 Minuten`, `10 Minuten`, `1 Stunde`, `13 Stunden`, `4 Tage`, `7 Tage`, `20 Tage`. Der gewählte Zeitraum wird als echter Discord-Timeout gesetzt.
+  2. **Kicken** – kickt die Person vom Server; fehlende Bot-Rechte werden sauber gemeldet.
+  3. **Bannen** – bannt die Person (auch per ID, falls sie den Server bereits verlassen hat); fehlende Bot-Rechte werden sauber gemeldet.
+  4. **Warnen** – Frage _„Warum möchtest du die Person warnen?“_ mit Button _„Formular öffnen“_ → Modal mit Pflichtfeld für den Grund. Maximal **5 aktive Warnungen** (atomar in der Datenbank geprüft). Die Person erhält eine private Components-V2-Nachricht mit Titel **„WARNUNG“** und dem Text _„Du wurdest gewarnt. Bitte halte dich jetzt an die Regeln bevor du bestraft wirst. Du hast jetzt X von 5 Warns.“_
+  5. **Unwarn** – Select-Menü (Placeholder _„Wähle einen Warn aus..“_) mit allen aktiven Warnungen. Die gewählte Warnung wird als aufgehoben markiert, verschwindet aus dem Menü und die Person erhält eine private Components-V2-Nachricht mit Titel **„GLÜCKWUNSCH“** und dem Text _„Dein Warn wurde aufgehoben. Du hast jetzt X von 5 Warns.“_
+  6. **User Infos** – _„Kommt bald.“_
+- **Zusätzliche Schutzmechanismen:** Keine Aktionen gegen sich selbst, Bots, den Server-Inhaber oder Personen mit gleich hoher/höherer Rolle; Prüfung von `moderatable`/`kickable`/`bannable` vor jeder Aktion.
+- **Datenbank:** Eigene Tabelle `system_warnings` (Soft-Delete über `revoked_at`), Migrations-Namespace `system-bot`. Warnungen aus der früheren Tabelle `admin_warnings` werden beim ersten Start einmalig übernommen (die alte Tabelle bleibt unangetastet und kann manuell gelöscht werden).
+- **Umgebungsvariablen:** `SYSTEM_BOT_TOKEN`, `SYSTEM_BOT_CLIENT_ID`
+- **Benötigte Bot-Berechtigungen:** `Moderate Members` (Timeout), `Kick Members`, `Ban Members`, `Send Messages`. Die Bot-Rolle muss **über** den Rollen der zu moderierenden Mitglieder stehen.
+- **Modul:** `src/bots/system-bot/`
+
+### Umgebungsvariablen beider Bots
+
+| Variable               | Bot        | Pflicht | Beschreibung                                               |
+| ---------------------- | ---------- | ------- | ---------------------------------------------------------- |
+| `VERIFY_BOT_TOKEN`     | Verify-Bot | ✅      | Bot-Token der Verify-Anwendung (Developer Portal → Bot)    |
+| `VERIFY_BOT_CLIENT_ID` | Verify-Bot | ✅      | Application-ID der Verify-Anwendung (General Information)  |
+| `SYSTEM_BOT_TOKEN`     | System-Bot | ✅      | Bot-Token der System-Anwendung (Developer Portal → Bot)    |
+| `SYSTEM_BOT_CLIENT_ID` | System-Bot | ✅      | Application-ID der System-Anwendung (General Information)  |
+| `DISCORD_DEV_GUILD_ID` | beide      | ❌      | Optionaler Test-Server für sofortige Command-Registrierung |
+
+Die Konfigurationsvalidierung (`zod`) prüft beim Start **beide** Bots: Fehlt oder ist eine der vier Variablen ungültig, bricht der Start mit einer verständlichen Fehlermeldung ab. Identische Tokens oder Client-IDs für beide Bots werden ebenfalls abgelehnt. Zusätzlich vergleicht der Runner nach dem Login die Application-ID des eingeloggten Accounts mit der konfigurierten Client-ID – bei einem Konflikt (z. B. vertauschte Tokens) wird der betroffene Bot gestoppt und registriert keine Commands.
+
+**Start-Log (Beispiel):**
+
+```
+[INFO] [App] Starte 2 getrennte(n) Discord-Bot(s): 'Verifizierungs-Bot (Christlichernico)' (verify-bot), 'System-Bot (Adminpanel)' (system-bot)
+[INFO] [Bot:verify-bot] ▶️  Starte Bot 'Verifizierungs-Bot (Christlichernico)' (ID: verify-bot) | Token aus VERIFY_BOT_TOKEN | Client-ID aus VERIFY_BOT_CLIENT_ID=1111… | Commands: /verifysystem
+[INFO] [Bot:verify-bot] ✅ Bot 'Verifizierungs-Bot (Christlichernico)' (verify-bot) ist eingeloggt als 'VerifyBot#1234' (User-ID: 1111…, Application-ID: 1111…).
+[INFO] [Bot:verify-bot] ✅ 1 globale(r) Slash-Command(s) für Bot 'Verifizierungs-Bot (Christlichernico)' (verify-bot) registriert: /verifysystem
+[INFO] [Bot:system-bot] ▶️  Starte Bot 'System-Bot (Adminpanel)' (ID: system-bot) | Token aus SYSTEM_BOT_TOKEN | Client-ID aus SYSTEM_BOT_CLIENT_ID=2222… | Commands: /adminpanel
+[INFO] [Bot:system-bot] ✅ Bot 'System-Bot (Adminpanel)' (system-bot) ist eingeloggt als 'SystemBot#5678' (User-ID: 2222…, Application-ID: 2222…).
+[INFO] [Bot:system-bot] ✅ 1 globale(r) Slash-Command(s) für Bot 'System-Bot (Adminpanel)' (system-bot) registriert: /adminpanel
+[INFO] [App] === Übersicht der getrennten Discord-Bots ===
+[INFO] [App]   ✅ Verifizierungs-Bot (Christlichernico) [verify-bot] → eingeloggt als 'VerifyBot#1234' (…) | Token: VERIFY_BOT_TOKEN | Commands: /verifysystem
+[INFO] [App]   ✅ System-Bot (Adminpanel) [system-bot] → eingeloggt als 'SystemBot#5678' (…) | Token: SYSTEM_BOT_TOKEN | Commands: /adminpanel
+```
 
 ---
 
@@ -70,7 +133,8 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
 
 - Discord-Bots benötigen eine dauerhafte WebSocket-Verbindung (Gateway).
 - Wenn der Free-Tier-Service schläft, trennt sich der Gateway. Bei einem Aufweck-Request (z. B. durch UptimeRobot) verbindet sich der Runner automatisch neu und setzt die Session fort.
-- **Intents:** Dieser Bot benötigt **keine** privilegierten Intents (kein `GuildMembers`-Intent erforderlich, da Interaktionen das `GuildMember`-Objekt direkt übermitteln).
+- **Intents:** Beide Bots benötigen **keine** privilegierten Intents – sie verwenden ausschließlich den `Guilds`-Intent (kein `GuildMembers`-Intent erforderlich, da Interaktionen das `GuildMember`-Objekt direkt übermitteln und der System-Bot Zielmitglieder gezielt per API lädt).
+- **Zwei Gateway-Verbindungen:** Jeder Bot hält seine eigene WebSocket-Verbindung mit seinem eigenen Token. Discord erlaubt pro Bot-Token 1000 Logins pro 24 Stunden – für zwei Bots unproblematisch.
 
 ### 3. Turso Free Tier
 
@@ -82,15 +146,19 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
 
 ### Schritt 1: Discord Developer Portal einrichten
 
+> **Wichtig:** Es werden **zwei getrennte Anwendungen** benötigt – eine für den Verify-Bot und eine für den System-Bot. Verwende niemals dasselbe Token/dieselbe Application-ID für beide Bots (die Konfigurationsvalidierung lehnt das ab).
+
+#### 1a) Anwendung für den Verify-Bot
+
 1. Öffne das [Discord Developer Portal](https://discord.com/developers/applications).
-2. Klicke auf **New Application** und gib einen Namen ein (z. B. `Christlichernico Bot`).
+2. Klicke auf **New Application** und gib einen Namen ein (z. B. `Christlichernico Verify`).
 3. Kopiere unter **General Information** die **Application ID** (wird später als `VERIFY_BOT_CLIENT_ID` genutzt).
 4. Gehe im linken Menü auf **Bot**:
    - Klicke auf **Reset Token** und kopiere das erzeugte Token (wird später als `VERIFY_BOT_TOKEN` in Render eingetragen).
    - **Privileged Gateway Intents:** Du musst **keine** privilegierten Intents (wie Presence oder Server Members) aktivieren! Das spart Berechtigungsprüfungen und massiv RAM.
 5. **Rollen-Hierarchie auf deinem Discord-Server (WICHTIG):**
    - Gehe in Discord in die **Servereinstellungen -> Rollen**.
-   - Ziehe die Rolle deines Bots in der Rollenliste **ÜBER** die Verifizierungs-Rolle (`1550951446961332495`). Ein Bot kann in Discord niemals Rollen vergeben, die gleichrangig oder höher als seine eigene höchste Rolle sind!
+   - Ziehe die Rolle deines Verify-Bots in der Rollenliste **ÜBER** die Verifizierungs-Rolle (`1550951446961332495`). Ein Bot kann in Discord niemals Rollen vergeben, die gleichrangig oder höher als seine eigene höchste Rolle sind!
    - Gib der Bot-Rolle die Berechtigung **Rollen verwalten** (`Manage Roles`).
 6. **Bot auf den Server einladen:**
    - Gehe im Developer Portal auf **OAuth2 -> URL Generator**.
@@ -101,6 +169,23 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
      - `Embed Links` (Links einbetten)
      - `Use Slash Commands` (Slash-Befehle verwenden)
    - Öffne die generierte URL im Browser und füge den Bot deinem Server hinzu.
+
+#### 1b) Anwendung für den System-Bot (Adminpanel)
+
+1. Klicke erneut auf **New Application** und gib einen Namen ein (z. B. `Christlichernico System`).
+2. Kopiere unter **General Information** die **Application ID** (wird später als `SYSTEM_BOT_CLIENT_ID` genutzt).
+3. Gehe auf **Bot** -> **Reset Token** und kopiere das Token (wird später als `SYSTEM_BOT_TOKEN` eingetragen). Auch hier sind **keine** privilegierten Intents nötig.
+4. **Rollen-Hierarchie:** Ziehe die Rolle des System-Bots **ÜBER** alle Rollen, deren Mitglieder moderiert werden sollen (Timeout, Kick, Bann funktionieren nur nach unten in der Hierarchie).
+5. **Bot auf den Server einladen:**
+   - **OAuth2 -> URL Generator**, Scopes: `bot` und `applications.commands`.
+   - **Bot Permissions**:
+     - `Moderate Members` (Mitglieder moderieren – für Timeouts)
+     - `Kick Members` (Mitglieder kicken)
+     - `Ban Members` (Mitglieder bannen)
+     - `Send Messages` (Nachrichten senden)
+     - `Use Slash Commands` (Slash-Befehle verwenden)
+   - Öffne die generierte URL im Browser und füge auch diesen Bot deinem Server hinzu.
+6. Stelle sicher, dass die fünf Adminpanel-Rollen (siehe [Bot 2](#bot-2-system-bot-adminpanel)) auf dem Server existieren – nur ihre Mitglieder können `/adminpanel` verwenden.
 
 ---
 
@@ -128,11 +213,11 @@ Vollständig implementierter, produktionsbereiter Bot für den **Christlichernic
 
 **Gute Nachricht: Das erledigt der Bot jetzt automatisch bei jedem Start!** 🎉
 
-Bei jedem Bot-Start (also auch nach jedem Render-Deployment oder Kaltstart) werden alle Slash-Commands automatisch bei Discord registriert:
+Bei jedem Bot-Start (also auch nach jedem Render-Deployment oder Kaltstart) registriert **jeder Bot getrennt seine eigenen** Slash-Commands automatisch bei Discord – der Verify-Bot nur `/verifysystem`, der System-Bot nur `/adminpanel`:
 
 1. **Global** – gilt für alle aktuellen und zukünftigen Server.
-2. **Zusätzlich pro Server** – für jeden Server, auf dem der Bot aktuell Mitglied ist. Guild-Commands sind bei Discord **sofort aktiv** (keine Cache-Wartezeit von bis zu 60 Minuten wie bei globalen Commands). Es entstehen keine Duplikate: Ein Guild-Command mit demselben Namen überschreibt den globalen Command lokal.
-3. **Beim Server-Beitritt** – tritt der Bot einem neuen Server bei, werden die Commands ebenfalls sofort registriert, ohne dass ein Neustart nötig ist.
+2. **Zusätzlich pro Server** – für jeden Server, auf dem der jeweilige Bot aktuell Mitglied ist. Guild-Commands sind bei Discord **sofort aktiv** (keine Cache-Wartezeit von bis zu 60 Minuten wie bei globalen Commands). Es entstehen keine Duplikate: Ein Guild-Command mit demselben Namen überschreibt den globalen Command lokal.
+3. **Beim Server-Beitritt** – tritt ein Bot einem neuen Server bei, werden seine Commands ebenfalls sofort registriert, ohne dass ein Neustart nötig ist.
 
 > **Hinweis:** `DISCORD_DEV_GUILD_ID` schließt andere Server nicht mehr aus – sie wird nur zusätzlich bedient (praktisch für Tests).
 
@@ -142,15 +227,19 @@ Ein manuelles Registrieren ist damit nicht mehr nötig, aber weiterhin möglich 
    ```bash
    cp .env.example .env
    ```
-2. Trage dein `VERIFY_BOT_TOKEN`, `VERIFY_BOT_CLIENT_ID` und optional deine `DISCORD_DEV_GUILD_ID` ein.
-3. Führe den Registrierungsbefehl aus (registriert jetzt ebenfalls global + auf allen Servern, auf denen der Bot ist):
+2. Trage `VERIFY_BOT_TOKEN`, `VERIFY_BOT_CLIENT_ID`, `SYSTEM_BOT_TOKEN`, `SYSTEM_BOT_CLIENT_ID` und optional deine `DISCORD_DEV_GUILD_ID` ein.
+3. Führe den Registrierungsbefehl aus (registriert für **jeden Bot getrennt** global + auf allen Servern, auf denen der jeweilige Bot ist):
 
    ```bash
-   # Dry-Run (zeigt den Payload ohne Senden)
+   # Dry-Run (zeigt die Payloads beider Bots ohne Senden)
    npm run deploy-commands -- --dry-run
 
-   # Echte Registrierung
+   # Echte Registrierung für beide Bots
    npm run deploy-commands
+
+   # Nur einen einzelnen Bot registrieren
+   npm run deploy-commands -- --bot=system-bot
+   npm run deploy-commands -- --bot=verify-bot
    ```
 
 ---
@@ -175,13 +264,15 @@ Ein manuelles Registrieren ist damit nicht mehr nötig, aber weiterhin möglich 
    - `BOT_OWNER_ID`: Deine Discord-User-ID (z. B. `123456789012345678`)
    - `TURSO_DATABASE_URL`: Deine Turso-URL (`libsql://...`)
    - `TURSO_AUTH_TOKEN`: Dein Turso Auth Token
-   - `VERIFY_BOT_TOKEN`: Das Discord Bot Token deines Verifizierungsbots
-   - `VERIFY_BOT_CLIENT_ID`: Die Discord Application ID
+   - `VERIFY_BOT_TOKEN`: Das Discord Bot Token deines Verify-Bots (Anwendung 1)
+   - `VERIFY_BOT_CLIENT_ID`: Die Application ID deines Verify-Bots (Anwendung 1)
+   - `SYSTEM_BOT_TOKEN`: Das Discord Bot Token deines System-Bots (Anwendung 2)
+   - `SYSTEM_BOT_CLIENT_ID`: Die Application ID deines System-Bots (Anwendung 2)
 7. Klicke auf **Deploy Web Service**.
 8. Überprüfe das Bereitstellungs-Log:
-   - Die Datenbankmigrationen werden automatisch beim Start ausgeführt.
+   - Die Datenbankmigrationen beider Bots werden automatisch beim Start ausgeführt (Namespaces `verify-bot` und `system-bot`).
    - Der Health-Check-Server lauscht auf `0.0.0.0:10000`.
-   - Der Bot loggt sich bei Discord ein.
+   - **Beide Bots loggen sich getrennt bei Discord ein.** Das Log zeigt für jeden Bot eindeutig, welcher Bot gestartet wird, unter welchem Discord-Account er eingeloggt ist und welche Commands er registriert hat (siehe [Start-Log-Beispiel](#umgebungsvariablen-beider-bots)).
    - Der RAM-Verbrauch wird protokolliert (`RSS ~100MB`).
 
 ---
@@ -221,8 +312,9 @@ Dank der zentralen Plugin- und Registry-Architektur kann jederzeit ein weiterer 
    export const ticketBotModule: IBotModule = {
      id: 'ticket-bot',
      name: 'Ticket-System Bot',
-     // Eindeutige eigene Umgebungsvariable für das Token:
+     // Eindeutige eigene Umgebungsvariablen für Token und Client-ID:
      tokenEnvVar: 'TICKET_BOT_TOKEN',
+     clientIdEnvVar: 'TICKET_BOT_CLIENT_ID',
      requiredIntents: [GatewayIntentBits.Guilds],
      migrations: [
        {
@@ -247,6 +339,12 @@ Dank der zentralen Plugin- und Registry-Architektur kann jederzeit ein weiterer 
      buttons: [
        /* Deine Button-Handler */
      ],
+     selectMenus: [
+       /* Deine Select-Menü-Handler (optional) */
+     ],
+     modals: [
+       /* Deine Modal-Handler (optional) */
+     ],
      async onInit(ctx: BotContext) {
        ctx.logger.info('Ticket-Bot initialisiert!');
      }
@@ -258,14 +356,21 @@ Dank der zentralen Plugin- und Registry-Architektur kann jederzeit ein weiterer 
    ```typescript
    import { ticketBotModule } from './bots/ticket-bot/index.js';
 
-   // Nach dem Verifizierungs-Bot einfach registrieren:
+   // Nach Verify-Bot und System-Bot einfach registrieren:
    registry.register(verifyBotModule);
+   registry.register(systemBotModule);
    registry.register(ticketBotModule);
    ```
 
-4. **In Render & `.env` hinterlegen:**
-   - Trage in der Render Web Service Konfiguration die neue geheime Umgebungsvariable `TICKET_BOT_TOKEN` ein.
-   - Nach dem nächsten Push baut Render die Anwendung automatisch neu. Beide Bots teilen sich dieselbe Laufzeit, denselben Health-Check und dieselbe Turso-Datenbank bei minimalem Ressourcenverbrauch!
+4. **Konfiguration ergänzen:**
+
+   - Ergänze `TICKET_BOT_TOKEN` und `TICKET_BOT_CLIENT_ID` im Zod-Schema in `src/core/config.ts` (und in `BOT_ENV_DEFINITIONS`), damit der Start bei fehlender Konfiguration sauber abbricht.
+   - Füge das Modul in `src/scripts/deploy-commands.ts` zur Liste `ALL_BOT_MODULES` hinzu.
+   - Trage die neuen Variablen in `.env.example` und `render.yaml` ein.
+
+5. **In Render & `.env` hinterlegen:**
+   - Trage in der Render Web Service Konfiguration die neuen geheimen Umgebungsvariablen `TICKET_BOT_TOKEN` und `TICKET_BOT_CLIENT_ID` ein.
+   - Nach dem nächsten Push baut Render die Anwendung automatisch neu. Alle Bots teilen sich dieselbe Laufzeit, denselben Health-Check und dieselbe Turso-Datenbank bei minimalem Ressourcenverbrauch – jeder Bot mit eigenem Discord-Login und eigener Command-Registrierung!
 
 ---
 
@@ -296,6 +401,8 @@ npm run deploy-commands -- --dry-run
 ## 🔒 Sicherheitshinweise
 
 - **Keine Secrets im Quellcode:** Weder Discord-Tokens noch Turso-Keys dürfen im Git-Repository gespeichert werden.
-- **Strikte Start-Validierung:** Das System startet mit `zod`-Validierung nur, wenn alle erforderlichen Variablen im erwarteten Format vorliegen.
-- **Owner-Schutz:** Kritische Befehle überprüfen server- und code-seitig immer die Discord-ID gegen `BOT_OWNER_ID` und vertrauen niemals reiner Client-seitiger Verborgenheit.
+- **Strikte Start-Validierung:** Das System startet mit `zod`-Validierung nur, wenn alle erforderlichen Variablen **beider Bots** im erwarteten Format vorliegen und sich Tokens/Client-IDs der Bots unterscheiden.
+- **Identitätsprüfung beim Login:** Nach dem Login wird die Application-ID des eingeloggten Accounts mit der konfigurierten Client-ID verglichen. Bei einem Konflikt (vertauschte Tokens) wird der Bot gestoppt, bevor er Commands registriert.
+- **Owner-Schutz:** Kritische Befehle des Verify-Bots überprüfen server- und code-seitig immer die Discord-ID gegen `BOT_OWNER_ID` und vertrauen niemals reiner Client-seitiger Verborgenheit.
+- **Rollenbasierter Adminpanel-Schutz:** Jede Adminpanel-Interaktion (Command, Button, Select-Menü, Modal) wird serverseitig gegen die fünf erlaubten Rollen geprüft; Select-Werte werden nur aus einer festen Whitelist übernommen.
 - **Minimaler Attack Surface:** Der HTTP-Server bietet keinerlei interaktive Webfunktionen, Dateiauslieferungen oder Schnittstellen außer `/health`.

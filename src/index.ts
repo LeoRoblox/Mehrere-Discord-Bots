@@ -4,6 +4,7 @@ import { startHttpServer, stopHttpServer } from './core/http-server.js';
 import { BotRegistry } from './core/bot-registry.js';
 import { logger } from './core/logger.js';
 import { verifyBotModule } from './bots/verify-bot/index.js';
+import { systemBotModule } from './bots/system-bot/index.js';
 
 let isShuttingDown = false;
 
@@ -19,7 +20,7 @@ async function bootstrap(): Promise<void> {
     logger.error('Unhandled Promise Rejection abgefangen:', reason);
   });
 
-  // 2. Konfiguration validieren
+  // 2. Konfiguration validieren (bricht bei fehlender Verify- ODER System-Bot-Konfiguration ab)
   const config = validateConfig();
 
   // 3. Minimalen HTTP-Health-Server starten (0.0.0.0:PORT mit /health)
@@ -28,17 +29,19 @@ async function bootstrap(): Promise<void> {
   // 4. Turso libSQL-Datenbank initialisieren
   const db = getDatabase(config);
 
-  // 5. Bot-Registry aufbauen und Module registrieren
+  // 5. Bot-Registry aufbauen und die getrennten Bot-Module registrieren
   const registry = new BotRegistry(config, db);
 
-  // Erstes Bot-Modul registrieren: Verifizierungs-Bot
+  // Bot 1: Verifizierungs-Bot (VERIFY_BOT_TOKEN / VERIFY_BOT_CLIENT_ID) – /verifysystem
   registry.register(verifyBotModule);
 
+  // Bot 2: System-Bot (SYSTEM_BOT_TOKEN / SYSTEM_BOT_CLIENT_ID) – /adminpanel
+  registry.register(systemBotModule);
+
   // Hier können in Zukunft weitere Bot-Module registriert werden:
-  // registry.register(moderationBotModule);
   // registry.register(ticketBotModule);
 
-  // 6. Alle Bots starten
+  // 6. Alle Bots getrennt starten (eigener Discord-Login + eigene Command-Registrierung je Bot)
   await registry.startAll();
 
   // 7. Ressourcenverbrauch protokollieren (Render Free-Tier Überwachung: ~400 MB RAM)
