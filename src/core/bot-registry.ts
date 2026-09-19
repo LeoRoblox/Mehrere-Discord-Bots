@@ -1,6 +1,8 @@
 import {
   Client,
+  Events,
   Options,
+  type Guild,
   type Interaction,
   type ChatInputCommandInteraction,
   type ButtonInteraction
@@ -126,13 +128,14 @@ export class BotRegistry {
       log.warn('Discord-Clientwarnung:', warning);
     });
 
-    client.once('ready', async (readyClient) => {
+    client.once(Events.ClientReady, async (readyClient) => {
       log.info(
         `Erfolgreich als '${readyClient.user.tag}' (ID: ${readyClient.user.id}) angemeldet.`
       );
 
-      // Slash-Commands automatisch bei Discord registrieren (Auto-Deploy beim Start),
-      // damit die Befehle auch ohne manuelles Ausführen von 'npm run deploy-commands' vorhanden sind.
+      // Slash-Commands automatisch bei Discord registrieren (Auto-Deploy bei JEDEM Start),
+      // damit die Befehle immer aktuell und ohne manuelles Ausführen von
+      // 'npm run deploy-commands' auf allen Servern verfügbar sind.
       await this.deployCommands(botModule, readyClient, log);
 
       if (botModule.onInit) {
@@ -142,6 +145,11 @@ export class BotRegistry {
           log.error(`Fehler bei onInit für Bot '${botModule.name}':`, initErr);
         }
       }
+    });
+
+    // Neuer Server: Slash-Commands SOFORT registrieren, ohne Neustart abwarten zu müssen
+    client.on(Events.GuildCreate, (guild: Guild) => {
+      this.registerCommandsForGuild(botModule, client, guild.id, log);
     });
 
     // 4. Interaktions-Dispatcher
@@ -170,44 +178,87 @@ export class BotRegistry {
 
   /**
    * Registriert die Slash-Commands eines Bot-Moduls automatisch bei Discord.
-   * Wird direkt nach dem Login ausgeführt, damit die Befehle immer aktuell und
-   * auch bei einem frischen Deployment (z. B. Render) vorhanden sind.
+   * Wird bei JEDEM Bot-Start ausgeführt, damit die Befehle immer aktuell sind.
+   *
+   * Strategie:
+   *  1. Globale Registrierung: Gilt für alle aktuellen und zukünftigen Server.
+   *     Discord kann globale Änderungen bis zu 1 Stunde cachen.
+   *  2. Zusätzliche Guild-Registrierung für JEDEN Server, auf dem der Bot
+   *     aktuell Mitglied ist (sowie optional DISCORD_DEV_GUILD_ID):
+   *     Guild-Commands sind SOFORT aktiv. Ein Guild-Command mit demselben Namen
+   *     wie ein globaler Command überschreibt diesen lokal – es entstehen keine
+   *     Duplikate (siehe Discord-Dokumentation).
    */
-  private async deployCommands(
+  public async deployCommands(
     botModule: IBotModule,
     readyClient: Client<true>,
     log: BotLogger
   ): Promise<void> {
+    const commandsData = botModule.commands.map((cmd) => cmd.data.toJSON());
+
+    if (commandsData.length === 0) {
+      log.warn('Keine Slash-Commands definiert – Registrierung wird übersprungen.');
+      return;
+    }
+
+    const commandList = commandsData.map((c) => `/${c.name}`).join(', ');
+
+    // 1) Global für alle Server registrieren (persistent, auch für zukünftige Server)
     try {
-      const commandsData = botModule.commands.map((cmd) => cmd.data.toJSON());
-
-      if (commandsData.length === 0) {
-        log.warn('Keine Slash-Commands definiert – Registrierung wird übersprungen.');
-        return;
-      }
-
-      const devGuildId = this.config.DISCORD_DEV_GUILD_ID;
-
-      if (devGuildId) {
-        // Guild-Commands sind sofort verfügbar (ideal für Tests)
-        await readyClient.application.commands.set(commandsData, devGuildId);
-        log.info(
-          `✅ ${commandsData.length} Slash-Command(s) für Guild ${devGuildId} registriert (sofort aktiv): ${commandsData
-            .map((c) => `/${c.name}`)
-            .join(', ')}`
-        );
-        return;
-      }
-
-      // Globale Registrierung (kann bis zu einer Stunde dauern, bis Discord sie überall cached)
       await readyClient.application.commands.set(commandsData);
       log.info(
-        `✅ ${commandsData.length} globale(r) Slash-Command(s) registriert: ${commandsData
+        `✅ ${commandsData.length} globale(r) Slash-Command(s) registriert: ${commandList}`
+      );
+    } catch (error) {
+      log.error('Fehler beim globalen Registrieren der Slash-Commands:', error);
+    }
+
+    // 2) Guild-Commands für jeden aktuellen Server: sofortige Verfügbarkeit
+    const targetGuildIds = new Set<string>(readyClient.guilds.cache.keys());
+
+    const devGuildId = this.config.DISCORD_DEV_GUILD_ID;
+    if (devGuildId) {
+      // Test-/Entwicklungsserver immer explizit einschließen (nicht mehr exklusiv!)
+      targetGuildIds.add(devGuildId);
+    }
+
+    if (targetGuildIds.size > 0) {
+      log.info(
+        `Registriere Slash-Commands zusätzlich sofort auf ${targetGuildIds.size} Server(n)...`
+      );
+    }
+
+    for (const guildId of targetGuildIds) {
+      await this.registerCommandsForGuild(botModule, readyClient, guildId, log);
+    }
+  }
+
+  /**
+   * Registriert die Slash-Commands eines Bot-Moduls für einen einzelnen Server.
+   * Guild-Registrierungen sind bei Discord sofort aktiv (kein Cache-Delay).
+   * Fehler werden isoliert, damit ein einzelner Server die übrigen nicht blockiert.
+   */
+  public async registerCommandsForGuild(
+    botModule: IBotModule,
+    client: Client,
+    guildId: string,
+    log: BotLogger
+  ): Promise<void> {
+    if (!botModule.commands || botModule.commands.length === 0) return;
+
+    try {
+      const commandsData = botModule.commands.map((cmd) => cmd.data.toJSON());
+      await client.application?.commands.set(commandsData, guildId);
+      log.info(
+        `✅ ${commandsData.length} Slash-Command(s) auf Server ${guildId} SOFORT aktiv: ${commandsData
           .map((c) => `/${c.name}`)
           .join(', ')}`
       );
     } catch (error) {
-      log.error('Fehler beim automatischen Registrieren der Slash-Commands:', error);
+      log.error(
+        `Fehler beim Registrieren der Slash-Commands auf Server ${guildId}:`,
+        error
+      );
     }
   }
 
